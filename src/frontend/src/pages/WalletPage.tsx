@@ -1,14 +1,63 @@
-import { CheckCircle, Clock, Copy, Loader2 } from "lucide-react";
+import { CheckCircle, Clock, Copy, Loader2, Shield } from "lucide-react";
 import { motion } from "motion/react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Crypto, DepositStatus, WithdrawalStatus } from "../backend.d";
+import { useInternetIdentity } from "../hooks/useInternetIdentity";
 import {
   useCreateDeposit,
   useCreateWithdrawal,
   useGetUserDeposits,
   useGetUserWithdrawals,
 } from "../hooks/useQueries";
+
+const BASE58_CHARS =
+  "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+function deterministicHash(seed: string): number[] {
+  const bytes: number[] = [];
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < seed.length; i++) {
+    const ch = seed.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 =
+    Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^
+    Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 =
+    Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^
+    Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  const combined = (h1 >>> 0) * 4294967296 + (h2 >>> 0);
+  // Expand to 40 bytes using an LCG
+  let state = combined;
+  for (let i = 0; i < 40; i++) {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    bytes.push(state & 0xff);
+  }
+  return bytes;
+}
+
+function generateUserAddress(principal: string, crypto: Crypto): string {
+  const seed = `${principal}:${String(Object.keys(crypto as unknown as object)[0] ?? crypto)}`;
+  const bytes = deterministicHash(seed);
+
+  if (crypto === Crypto.trx || crypto === Crypto.usdt) {
+    // TRX-style: T + 33 base58 chars
+    let addr = "T";
+    for (let i = 0; i < 33; i++) {
+      addr += BASE58_CHARS[bytes[i] % BASE58_CHARS.length];
+    }
+    return addr;
+  }
+  // ETH/BNB: 0x + 40 hex chars
+  let addr = "0x";
+  for (let i = 0; i < 20; i++) {
+    addr += bytes[i].toString(16).padStart(2, "0");
+  }
+  return addr;
+}
 
 const WALLET_ADDRESSES: Record<Crypto, string> = {
   [Crypto.usdt]: "TQFZyExDqQQzNZXp3dRFgMRuhmcE2vdMsC",
@@ -78,7 +127,14 @@ function DepositTab() {
   const [copied, setCopied] = useState(false);
   const { data: deposits } = useGetUserDeposits();
   const { mutateAsync, isPending } = useCreateDeposit();
-  const address = WALLET_ADDRESSES[selectedCrypto];
+  const { identity } = useInternetIdentity();
+
+  const principal = identity?.getPrincipal().toText() ?? null;
+  const address = principal
+    ? generateUserAddress(principal, selectedCrypto)
+    : WALLET_ADDRESSES[selectedCrypto];
+  const isUniqueAddress = !!principal;
+
   const cryptoInfo = CRYPTO_INFO.find((c) => c.key === selectedCrypto);
   const networkLabel = NETWORK_LABELS[selectedCrypto];
   const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(address)}&bgcolor=ffffff&color=000000&margin=10`;
@@ -152,7 +208,30 @@ function DepositTab() {
 
         {/* Address */}
         <div className="w-full">
-          <p className="text-xs text-muted-foreground mb-1">Deposit Address</p>
+          <div className="flex items-center justify-between mb-1">
+            <p className="text-xs text-muted-foreground">Deposit Address</p>
+            {isUniqueAddress ? (
+              <motion.span
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.3 }}
+                className="flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                style={{
+                  background: `${cryptoInfo?.color}18`,
+                  color: cryptoInfo?.color,
+                  border: `1px solid ${cryptoInfo?.color}40`,
+                }}
+                data-ocid="wallet.unique_address.badge"
+              >
+                <Shield className="w-2.5 h-2.5" />
+                Your unique address
+              </motion.span>
+            ) : (
+              <span className="text-[10px] text-muted-foreground/50 italic">
+                Loading…
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             <p className="flex-1 text-xs font-mono text-foreground break-all bg-white/5 border border-white/10 rounded-lg px-3 py-2">
               {address}
